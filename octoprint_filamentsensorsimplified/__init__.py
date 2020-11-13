@@ -21,7 +21,7 @@ class Filament_sensor_simplifiedPlugin(octoprint.plugin.StartupPlugin,
 	# pin number used as plugin disabled
 	pin_num_disabled = -1
 	# default gcode
-	default_gcode = 'M600 X0 Y0'
+	default_gcode = 'M6031' # Instead of the default 'M600 X0 Y0'
 	# gpio mode disabled
 	gpio_mode_disabled = False
 	# printing flag
@@ -64,6 +64,10 @@ class Filament_sensor_simplifiedPlugin(octoprint.plugin.StartupPlugin,
 	def triggered(self):
 		return int(self._settings.get(["triggered"]))
 
+	@property
+	def enable_sensor_on_start(self):
+		return int(self._settings.get(["enable_sensor_on_start"]))
+
 	# AssetPlugin hook
 	def get_assets(self):
 		return dict(js=["js/filamentsensorsimplified.js"], css=["css/filamentsensorsimplified.css"])
@@ -79,7 +83,8 @@ class Filament_sensor_simplifiedPlugin(octoprint.plugin.StartupPlugin,
 			pin=self.pin_num_disabled,  # Default is -1
 			power=0,
 			g_code=self.default_gcode,
-			triggered=0
+			triggered=0,
+			enable_sensor_on_start = 1
 		)
 
 	# simpleApiPlugin
@@ -145,6 +150,7 @@ class Filament_sensor_simplifiedPlugin(octoprint.plugin.StartupPlugin,
 	def on_after_startup(self):
 		self._logger.info("Filament Sensor Simplified started")
 		gpio_mode = GPIO.getmode()
+
 		if gpio_mode is not None:
 			self._settings.set(["gpio_mode"], gpio_mode)
 			self.gpio_mode_disabled = True
@@ -156,7 +162,8 @@ class Filament_sensor_simplifiedPlugin(octoprint.plugin.StartupPlugin,
 				GPIO.cleanup()
 				GPIO.setmode(GPIO.BCM)
 			self.gpio_mode_disabled = False
-		self._logger.info("Mode is %s" % (gpio_mode))
+		self._logger.info("Mode has been set from %s to %s" % (gpio_mode, GPIO.getmode()))
+		self.enable_sensor(None)
 
 	def on_settings_save(self, data):
 		if "pin" in data and "gpio_mode" in data:
@@ -289,61 +296,7 @@ class Filament_sensor_simplifiedPlugin(octoprint.plugin.StartupPlugin,
 					Events.PRINT_STARTED,
 					Events.PRINT_RESUMED
 			):
-				self._logger.info("%s: Enabling filament sensor." % (event))
-				if self.sensor_enabled():
-					if self.gpio_mode is 10:
-						GPIO.setmode(GPIO.BOARD)
-					elif self.gpio_mode is 11:
-						GPIO.setmode(GPIO.BCM)
-
-					# 0 = sensor is grounded, react to rising edge pulled up by pull up resistor
-					if self.power is 0:
-						GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-						# triggered when open
-						if self.triggered is 0:
-							GPIO.add_event_detect(
-								self.pin, GPIO.RISING,
-								callback=self.sensor_callback,
-								bouncetime=self.bounce_time)
-						# triggered when closed
-						else:
-							GPIO.add_event_detect(
-								self.pin, GPIO.FALLING,
-								callback=self.sensor_callback,
-								bouncetime=self.bounce_time)
-
-					# 1 = sensor is powered, react to falling edge pulled down by pull down resistor
-					else:
-						GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-						# triggered when open
-						if self.triggered is 0:
-							GPIO.add_event_detect(
-								self.pin, GPIO.RISING,
-								callback=self.sensor_callback,
-								bouncetime=self.bounce_time)
-						# triggered when closed
-						else:
-							GPIO.add_event_detect(
-								self.pin, GPIO.FALLING,
-								callback=self.sensor_callback,
-								bouncetime=self.bounce_time)
-
-					# print started with no filament present
-					if self.no_filament():
-						self._logger.info("Printing aborted: no filament detected!")
-						self._printer.cancel_print()
-						self._plugin_manager.send_plugin_message(self._identifier,
-																 dict(type="error", autoClose=True,
-																	  msg="No filament detected! Print cancelled."))
-					# print started
-					else:
-						self.printing = True
-
-				# print started without plugin configuration
-				else:
-					self._plugin_manager.send_plugin_message(self._identifier,
-															 dict(type="info", autoClose=True,
-																  msg="You may have forgotten to configure this plugin."))
+				self.enable_sensor(event)
 
 			# Disable sensor
 			elif event in (
@@ -352,34 +305,125 @@ class Filament_sensor_simplifiedPlugin(octoprint.plugin.StartupPlugin,
 					Events.PRINT_CANCELLED,
 					Events.ERROR
 			):
-				self._logger.info("%s: Disabling filament sensor." % (event))
-				GPIO.remove_event_detect(self.pin)
-				self.changing_filament_initiated = False
-				self.changing_filament_started = False
-				self.paused_for_user = False
-				self.printing = False
+				self.disable_sensor(event)
+
+	def enable_sensor(self, event):
+		if event is not None:
+			self._logger.info("%s: Enabling filament sensor." % (event))
+		else:
+			self._logger.info("Start up: Enabling filament sensor.")
+		if self.sensor_enabled():
+			self._logger.debug("enable_sensor: sensor_enabled.")
+			if self.gpio_mode in (GPIO.BOARD, GPIO.BCM):
+				self._logger.debug("enable_sensor: GPIO.setmode %s." % (self.gpio_mode))
+				GPIO.setmode(self.gpio_mode)
+
+			# 0 = sensor is grounded, react to rising edge pulled up by pull up resistor
+			if self.power is 0:
+				self._logger.debug("enable_sensor: self.power is 0.")
+				GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+				GPIO.add_event_detect(
+					self.pin, GPIO.BOTH,
+					callback=self.sensor_callback,
+					bouncetime=self.bounce_time)
+
+			# 1 = sensor is powered, react to falling edge pulled down by pull down resistor
+			else:
+				self._logger.debug("enable_sensor: self.power is not 0.")
+				GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+				GPIO.add_event_detect(
+					self.pin, GPIO.BOTH,
+					callback=self.sensor_callback,
+					bouncetime=self.bounce_time)
+
+			# print started with no filament present
+			if not self.enable_sensor_on_start and self.no_filament():
+				self._logger.info("Printing aborted: no filament detected!")
+				self._printer.cancel_print()
+				self._plugin_manager.send_plugin_message(self._identifier,
+														 dict(type="error", autoClose=True,
+																msg="No filament detected! Print cancelled."))
+			# print started
+			else:
+				if not self.enable_sensor_on_start:
+					self.printing = True
+
+		# print started without plugin configuration
+		else:
+			self._plugin_manager.send_plugin_message(self._identifier,
+													 dict(type="info", autoClose=True,
+															msg="You may have forgotten to configure this plugin."))
+
+	def disable_sensor(self, event):
+		if event is not None:
+			self._logger.info("%s: Disabling filament sensor." % (event))
+		else:
+			self._logger.info("Disabling filament sensor.")
+
+		GPIO.remove_event_detect(self.pin)
+		self.changing_filament_initiated = False
+		self.changing_filament_started = False
+		self.paused_for_user = False
+		self.printing = False
 
 	def sensor_callback(self, _):
+		self._logger.debug("sensor_callback: pin %s, filament out is %s." % (self.pin, self.no_filament()))
+
+		# make sure the signal is stable
 		trigger = True
+		gpio_edge = GPIO.input(self.pin)
 		for x in range(0, 5):
 			sleep(0.05)
-			if not self.no_filament():
+			if gpio_edge is not GPIO.input(self.pin):
 				trigger = False
 
 		if trigger:
-			self._logger.info("Sensor was triggered")
-			if not self.changing_filament_initiated:
-				self.send_out_of_filament()
+			# triggered when open
+			if self.triggered is 0:
+				# Rising edge detected
+				if gpio_edge:
+					self._logger.info("Sensor was triggered on filament out")
+					self.send_out_of_filament()
+					self.changing_filament_initiated = True
+				# Falling edge detected
+				else:
+					self._logger.info("Sensor was triggered on filament in")
+					if self.changing_filament_initiated:
+						self.show_printer_refilled_popup()
+						self.changing_filament_initiated = False
+			# triggered when closed
+			else:
+				# Rising edge detected
+				if gpio_edge:
+					self._logger.info("Sensor was triggered on filament in")
+					if self.changing_filament_initiated:
+						self.show_printer_refilled_popup()
+						self.changing_filament_initiated = False
+				# Falling edge detected
+				else:
+					self._logger.info("Sensor was triggered on filament out")
+					self.send_out_of_filament()
+					self.changing_filament_initiated = True
 
 	def send_out_of_filament(self):
-		self.show_printer_runout_popup()
-		self._logger.info("Sending out of filament GCODE: %s" % (self.g_code))
-		self._printer.commands(self.g_code)
-		self.changing_filament_initiated = True
+		if not self.changing_filament_initiated:
+			self.show_printer_runout_popup()
+			self._logger.info("Sending out of filament GCODE: %s" % (self.g_code))
+			g_codes = self.g_code.split(';')
+			for g_code in g_codes:
+				self._logger.debug("Sending out of filament GCODE: %s" % (g_code))
+				self._printer.commands(g_code)
+				sleep(1)
 
 	def show_printer_runout_popup(self):
+		self.show_printer_popup("Printer ran out of filament!")
+
+	def show_printer_refilled_popup(self):
+		self.show_printer_popup("Printer filament refilled!")
+
+	def show_printer_popup(self, message):
 		self._plugin_manager.send_plugin_message(self._identifier,
-												 dict(type="info", autoClose=False, msg="Printer ran out of filament!"))
+												 dict(type="info", autoClose=False, msg=message))
 
 	def get_update_information(self):
 		# Define the configuration for your plugin to use with the Software Update
@@ -387,17 +431,17 @@ class Filament_sensor_simplifiedPlugin(octoprint.plugin.StartupPlugin,
 		# for details.
 		return dict(
 			filamentsensorsimplified=dict(
-				displayName="Filament sensor simplified",
+				displayName="Filament sensor simplified (Qidi)",
 				displayVersion=self._plugin_version,
 
 				# version check: github repository
 				type="github_release",
-				user="luckyx182",
+				user="tronfu",
 				repo="Filament_sensor_simplified",
 				current=self._plugin_version,
 
 				# update method: pip
-				pip="https://github.com/luckyx182/Filament_sensor_simplified/archive/{target_version}.zip"
+				pip="https://github.com/tronfu/Filament_sensor_simplified/archive/{target_version}.zip"
 			)
 		)
 
@@ -409,7 +453,7 @@ class Filament_sensor_simplifiedPlugin(octoprint.plugin.StartupPlugin,
 # __plugin_pythoncompat__ = ">=3,<4" # only python 3
 __plugin_pythoncompat__ = ">=2.7,<4"  # python 2 and 3
 
-__plugin_name__ = "Filament Sensor Simplified"
+__plugin_name__ = "Filament Sensor Simplified (Qidi)"
 __plugin_version__ = "0.1.0"
 
 

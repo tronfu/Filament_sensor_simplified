@@ -1,5 +1,19 @@
-<h3>{{ _('Filament Sensor Simplified') }}</h3>
+<h3>{{ _('Filament Sensor Simplified (Qidi)') }}</h3>
 <form id="filamentsensorsimplified_settings" class="form-horizontal marginTop">
+
+  <div class="control-group">
+        <div class="marginBot">
+            <b>Enable sensor on start:</b>
+        </div>
+        <label class="control-label">{{ _('Enable sensor on start:') }}</label>
+        <div class="controls" data-toggle="tooltip"
+             title="{{ _('Yes - enable sensor at start (select this option when print jobs are sent outside of Octoprint, e.g., Qidi Tech X-Plus, X-Max, etc), No - enable sensor only when Octoprint starts a print job') }}">
+            <select id="enableSensorOnStart" class="select-mini" data-bind="value: settingsViewModel.settings.plugins.filamentsensorsimplified.enable_sensor_on_start, disable:printing">
+                <option value="1">{{ _('Yes') }}</option>
+                <option value="0">{{ _('No') }}</option>
+            </select>
+        </div>
+    </div>
 
     <div class="control-group">
         <div class="marginBot">
@@ -90,7 +104,7 @@
         </div>
         <div style="font-size: 11px">
             For more information click <a
-                href="https://github.com/LuckyX182/Filament_sensor_simplified">here</a>
+                href="https://github.com/tronfu/Filament_sensor_simplified">here</a>
         </div>
     </div>
 </form>
